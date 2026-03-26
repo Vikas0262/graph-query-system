@@ -2,7 +2,6 @@
 
 **Live Demo:** https://graph-query-system-vikas.vercel.app  
 **Repo:** https://github.com/Vikas0262/graph-query-system  
-**Author:** Vikas Vishwakarma
 
 ---
 
@@ -157,4 +156,4 @@ public/
 
 ## AI tools used
 
-Built using GitHub Copilot as the primary coding assistant. All prompts and iteration notes are in the `/sessions` folder.
+GitHub Copilot, Claude, Groq API (llama-3.3-70b-versatile)
