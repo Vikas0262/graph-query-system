@@ -82,7 +82,7 @@ async function fetchManifest() {
 }
 
 /**
- * Fetch all files for a folder using manifest.json
+ * Fetch all files for a folder using manifest.json - OPTIMIZED FOR PARALLEL LOADING
  */
 async function fetchAllFilesFromDirectory(folderName) {
   // First, try to fetch the manifest
@@ -90,37 +90,37 @@ async function fetchAllFilesFromDirectory(folderName) {
   
   if (manifest && manifest[folderName]) {
     const filenames = manifest[folderName];
-    const records = [];
     const baseUrl = `${DATA_DIR}/${folderName}`;
     
-    for (const filename of filenames) {
-      const path = `${baseUrl}/${filename}`;
-      const result = await fetchJSONLFile(path);
-      records.push(...result);
-    }
+    // PARALLEL LOAD: Fetch all files concurrently instead of sequentially
+    const fetchPromises = filenames.map(filename => 
+      fetchJSONLFile(`${baseUrl}/${filename}`)
+    );
+    
+    const results = await Promise.all(fetchPromises);
+    const records = results.flat(); // Flatten all arrays into one
     
     return records;
   }
   
   // Fallback: try directory patterns if manifest fails
-  console.warn(`Manifest entry not found for ${folderName}, trying fallback...`);
+  console.warn(`⚠️ Manifest entry not found for ${folderName}, trying fallback...`);
   const records = [];
   const baseUrl = `${DATA_DIR}/${folderName}`;
 
-  for (let i = 0; i < 50; i++) {
-    const path = `${baseUrl}/part-${String(i).padStart(5, "0")}.jsonl`;
-    const result = await fetchJSONLFile(path);
-    if (result.length > 0) {
-      records.push(...result);
-    }
-  }
-
-  return records;
+  // Try to fetch up to 50 part files in parallel
+  const attempts = Array.from({ length: 50 }, (_, i) => 
+    fetchJSONLFile(`${baseUrl}/part-${String(i).padStart(5, "0")}.jsonl`)
+  );
+  
+  const results = await Promise.all(attempts);
+  return results.flat().filter(r => r.length > 0).flat();
 }
 
 /**
  * Main data loader function
  * Returns an object with all tables as arrays
+ * Optimized: Loads all critical tables IN PARALLEL using Promise.all()
  */
 export async function loadAllData() {
   const data = {
@@ -144,76 +144,69 @@ export async function loadAllData() {
   };
 
   // Load critical tables for the O2C flow
-  console.log("Loading SAP O2C data...");
+  console.log("⏳ Loading SAP O2C data in parallel...");
+  const startTime = performance.now();
 
   try {
-    // Load business partners
-    data.businessPartners = await fetchAllFilesFromDirectory("business_partners");
-    console.log(`Loaded ${data.businessPartners.length} business partners`);
+    // PARALLEL LOAD: Load all critical tables at once instead of sequentially
+    const [bps, soHeaders, soItems, delHeaders, delItems, billHeaders, products, plants, journalEnt, payments] = await Promise.all([
+      fetchAllFilesFromDirectory("business_partners"),
+      fetchAllFilesFromDirectory("sales_order_headers"),
+      fetchAllFilesFromDirectory("sales_order_items"),
+      fetchAllFilesFromDirectory("outbound_delivery_headers"),
+      fetchAllFilesFromDirectory("outbound_delivery_items"),
+      fetchAllFilesFromDirectory("billing_document_headers"),
+      fetchAllFilesFromDirectory("products"),
+      fetchAllFilesFromDirectory("plants"),
+      fetchAllFilesFromDirectory("journal_entry_items_accounts_receivable"),
+      fetchAllFilesFromDirectory("payments_accounts_receivable"),
+    ]);
 
-    // Load sales order headers
-    data.salesOrderHeaders = await fetchAllFilesFromDirectory("sales_order_headers");
-    console.log(`Loaded ${data.salesOrderHeaders.length} sales order headers`);
+    data.businessPartners = bps;
+    data.salesOrderHeaders = soHeaders;
+    data.salesOrderItems = soItems;
+    data.outboundDeliveryHeaders = delHeaders;
+    data.outboundDeliveryItems = delItems;
+    data.billingDocumentHeaders = billHeaders;
+    data.products = products;
+    data.plants = plants;
+    data.journalEntries = journalEnt;
+    data.payments = payments;
 
-    // Load sales order items
-    data.salesOrderItems = await fetchAllFilesFromDirectory("sales_order_items");
-    console.log(`Loaded ${data.salesOrderItems.length} sales order items`);
+    console.log(`✅ Loaded ${data.businessPartners.length} business partners`);
+    console.log(`✅ Loaded ${data.salesOrderHeaders.length} sales order headers`);
+    console.log(`✅ Loaded ${data.salesOrderItems.length} sales order items`);
+    console.log(`✅ Loaded ${data.outboundDeliveryHeaders.length} outbound delivery headers`);
+    console.log(`✅ Loaded ${data.outboundDeliveryItems.length} outbound delivery items`);
+    console.log(`✅ Loaded ${data.billingDocumentHeaders.length} billing document headers`);
+    console.log(`✅ Loaded ${data.products.length} products`);
+    console.log(`✅ Loaded ${data.plants.length} plants`);
+    console.log(`✅ Loaded ${data.journalEntries.length} journal entries`);
+    console.log(`✅ Loaded ${data.payments.length} payments`);
 
-    // Load outbound deliveries
-    data.outboundDeliveryHeaders = await fetchAllFilesFromDirectory(
-      "outbound_delivery_headers"
-    );
-    console.log(`Loaded ${data.outboundDeliveryHeaders.length} outbound delivery headers`);
+    // Load other secondary tables in parallel
+    const [bpAddresses, billItems] = await Promise.all([
+      fetchAllFilesFromDirectory("business_partner_addresses"),
+      fetchAllFilesFromDirectory("billing_document_items"),
+    ]);
 
-    data.outboundDeliveryItems = await fetchAllFilesFromDirectory(
-      "outbound_delivery_items"
-    );
-    console.log(`Loaded ${data.outboundDeliveryItems.length} outbound delivery items`);
+    data.businessPartnerAddresses = bpAddresses;
+    data.billingDocumentItems = billItems;
 
-    // Load billing documents
-    data.billingDocumentHeaders = await fetchAllFilesFromDirectory(
-      "billing_document_headers"
-    );
-    console.log(`Loaded ${data.billingDocumentHeaders.length} billing document headers`);
+    console.log(`✅ Loaded ${data.businessPartnerAddresses.length} business partner addresses`);
+    console.log(`✅ Loaded ${data.billingDocumentItems.length} billing document items`);
 
-    // Load products
-    data.products = await fetchAllFilesFromDirectory("products");
-    console.log(`Loaded ${data.products.length} products`);
+    const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
+    console.log(`🚀 All data loaded in ${loadTime}s | 📊 Total: ${
+      data.businessPartners.length + 
+      data.salesOrderHeaders.length + 
+      data.billingDocumentHeaders.length +
+      data.outboundDeliveryHeaders.length
+    } key records`);
 
-    // Load plants
-    data.plants = await fetchAllFilesFromDirectory("plants");
-    console.log(`Loaded ${data.plants.length} plants`);
-
-    // Load journal entries
-    data.journalEntries = await fetchAllFilesFromDirectory(
-      "journal_entry_items_accounts_receivable"
-    );
-    console.log(`Loaded ${data.journalEntries.length} journal entries`);
-
-    // Load payments
-    data.payments = await fetchAllFilesFromDirectory("payments_accounts_receivable");
-    console.log(`Loaded ${data.payments.length} payments`);
-
-    // Load other tables
-    data.businessPartnerAddresses = await fetchAllFilesFromDirectory(
-      "business_partner_addresses"
-    );
-    data.productDescriptions = await fetchAllFilesFromDirectory("product_descriptions");
-    data.productPlants = await fetchAllFilesFromDirectory("product_plants");
-    data.productStorageLocations = await fetchAllFilesFromDirectory(
-      "product_storage_locations"
-    );
-    data.customerCompanyAssignments = await fetchAllFilesFromDirectory(
-      "customer_company_assignments"
-    );
-    data.customerSalesAreaAssignments = await fetchAllFilesFromDirectory(
-      "customer_sales_area_assignments"
-    );
-
-    console.log("Data loading complete!");
     return data;
   } catch (error) {
-    console.error("Error loading SAP O2C data:", error);
+    console.error("❌ Error loading SAP O2C data:", error);
     throw error;
   }
 }
